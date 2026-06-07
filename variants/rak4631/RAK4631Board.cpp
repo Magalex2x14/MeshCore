@@ -41,6 +41,13 @@ void RAK4631Board::initiateShutdown(uint8_t reason) {
 void RAK4631Board::begin() {
   NRF52BoardDCDC::begin();
   pinMode(PIN_VBAT_READ, INPUT);
+
+  // Initialize LED pins  
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_BLUE, OUTPUT);
+  digitalWrite(LED_GREEN, !LED_STATE_ON);
+  digitalWrite(LED_BLUE, !LED_STATE_ON); 
+
 #ifdef PIN_USER_BTN
   pinMode(PIN_USER_BTN, INPUT_PULLUP);
 #endif

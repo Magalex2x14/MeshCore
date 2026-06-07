@@ -17,7 +17,24 @@ protected:
 public:
   RAK4631Board() : NRF52Board("RAK4631_OTA") {}
   void begin();
+#if RXTX_LEDS
+  // Add TX LED control
+  void onBeforeTransmit() override {
+    digitalWrite(LED_TX, LED_STATE_ON);
+    //digitalWrite(LED_RX, !LED_STATE_ON); // ensure RX LED off
+  }
+  void onAfterTransmit() override {
+    digitalWrite(LED_TX, !LED_STATE_ON);
+  }
 
+  // RX LED control
+  void onReceiveStart() override {
+    digitalWrite(LED_RX, LED_STATE_ON);
+  }
+  void onReceiveEnd() override {
+    digitalWrite(LED_RX, !LED_STATE_ON);
+  }
+#endif
   #define BATTERY_SAMPLES 8
 
   uint16_t getBattMilliVolts() override {

@@ -75,6 +75,11 @@ extern "C"
 #define LED_GREEN PIN_LED1
 #define LED_BLUE PIN_LED2
 
+#if RXTX_LEDS
+#define LED_TX LED_GREEN
+#define LED_RX LED_BLUE
+#endif
+
 #define LED_STATE_ON 1 // State when LED is litted
 
 /*

@@ -51,6 +51,11 @@ public:
   virtual const char* getManufacturerName() const = 0;
   virtual void onBeforeTransmit() { }
   virtual void onAfterTransmit() { }
+ #if RXTX_LEDS
+  // receive callbacks  
+  virtual void onReceiveStart() { }
+  virtual void onReceiveEnd() { }
+#endif 
   virtual void reboot() = 0;
   virtual void powerOff() { /* no op */ }
   // Called by example setup() functions to signal that boot is complete.
