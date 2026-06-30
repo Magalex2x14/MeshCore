@@ -102,18 +102,6 @@ void RadioLibWrapper::loop() {
 
     MESH_DEBUG_PRINTLN("RadioLibWrapper: noise_floor = %d", (int)_noise_floor);
   }
- #if RXTX_LEDS
-  // detect receive state changes
-  static bool was_receiving = false;
-  bool now_receiving = isReceiving();
-
-  if (now_receiving && !was_receiving) {
-    _board->onReceiveStart();
-  } else if (!now_receiving && was_receiving) {
-    _board->onReceiveEnd();
-  }  
-  was_receiving = now_receiving;
-#endif 
 }
 
 void RadioLibWrapper::startRecv() {
