@@ -8,19 +8,8 @@
 #define STATE_TX_DONE    4
 #define STATE_INT_READY 16
 
-// In-place insertion sort of int16_t samples for the noise-floor median. Runs once per
-// calibration block (64 elements, ~every 2 s of idle), so O(n^2) is irrelevant here.
-static void sortInt16(int16_t* a, int n) {
-  for (int i = 1; i < n; i++) {
-    int16_t key = a[i];
-    int j = i - 1;
-    while (j >= 0 && a[j] > key) {
-      a[j + 1] = a[j];
-      j--;
-    }
-    a[j + 1] = key;
-  }
-}
+#define NUM_NOISE_FLOOR_SAMPLES  64
+#define SAMPLING_THRESHOLD  14
 
 // ambient CAD auto-calibration: probe CAD periodically while idle, and raise/lower detPeak
 // so ambient activity (sub-decode-threshold distant traffic, interference) stops tripping LBT
@@ -65,7 +54,7 @@ void RadioLibWrapper::begin() {
 
   // start average out some samples
   _num_floor_samples = 0;
-  _floor_block_ready = false;
+  _floor_sample_sum = 0;
 }
 
 uint32_t RadioLibWrapper::getRngSeed() {
@@ -83,9 +72,9 @@ void RadioLibWrapper::idle() {
 
 void RadioLibWrapper::triggerNoiseFloorCalibrate(int threshold) {
   _threshold = threshold;
-   if (_num_floor_samples >= NUM_NOISE_FLOOR_SAMPLES) {  // restart only once the current block is complete
+  if (_num_floor_samples >= NUM_NOISE_FLOOR_SAMPLES) {  // ignore trigger if currently sampling
     _num_floor_samples = 0;
-    _floor_block_ready = false;
+    _floor_sample_sum = 0;
   }
 }
 
@@ -100,39 +89,32 @@ void RadioLibWrapper::resetAGC() {
   doResetAGC();
   state = STATE_IDLE;   // trigger a startReceive()
 
-  // Discard any in-progress noise-floor block: the analog frontend was just reset, so
-  // queued RSSI samples are stale. _noise_floor itself is left in place — the median
-  // estimator no longer drifts to -120 (the reason the old ratchet needed a hard
-  // _noise_floor = 0 reset), and forcing 0 here would create a brief permissive LBT
-  // window (margin = RSSI - 0) until the next block completes.
+  // Reset noise floor sampling so it reconverges from scratch.
+  // Without this, a stuck _noise_floor of -120 makes the sampling threshold
+  // too low (-106) to accept normal samples (~-105), self-reinforcing the
+  // stuck value even after the receiver has recovered.
+  _noise_floor = 0;
   _num_floor_samples = 0;
-  _floor_block_ready = false;
+  _floor_sample_sum = 0;
 }
 
 void RadioLibWrapper::loop() {
   if (state == STATE_RX && _num_floor_samples < NUM_NOISE_FLOOR_SAMPLES) {
     if (!isReceivingPacket()) {
-      // Accept every idle sample. The old "rssi < floor + threshold" filter was a one-way
-      // ratchet: it only ever accepted samples below the current floor, so the block average
-      // drifted downward to the -120 clamp and never recovered — leaving _noise_floor stuck
-      // low and the RSSI-margin LBT permanently over-sensitive.
-      _floor_samples[_num_floor_samples++] = (int16_t)getCurrentRSSI();
+      int rssi = getCurrentRSSI();
+      if (rssi < _noise_floor + SAMPLING_THRESHOLD) {  // only consider samples below current floor + sampling THRESHOLD
+        _num_floor_samples++;
+        _floor_sample_sum += rssi;
+      }
     }
-  } else if (_num_floor_samples >= NUM_NOISE_FLOOR_SAMPLES && !_floor_block_ready) {
-    // Block complete: reduce to the median. The median rejects transient interference
-    // spikes (high and low outliers) and recovers in BOTH directions, unlike the ratcheted
-    // mean. _noise_floor is written only here, so the previous value stays valid while the
-    // next block is sampled — no reset-to-0, no permissive LBT window during reconvergence.
-    sortInt16(_floor_samples, NUM_NOISE_FLOOR_SAMPLES);
-    int16_t median = (int16_t)(((int32_t)_floor_samples[NUM_NOISE_FLOOR_SAMPLES / 2 - 1]
-                              + (int32_t)_floor_samples[NUM_NOISE_FLOOR_SAMPLES / 2]) / 2);
-    _noise_floor = median;
+  } else if (_num_floor_samples >= NUM_NOISE_FLOOR_SAMPLES && _floor_sample_sum != 0) {
+    _noise_floor = _floor_sample_sum / NUM_NOISE_FLOOR_SAMPLES;
     if (_noise_floor < -120) {
       _noise_floor = -120;    // clamp to lower bound of -120dBi
     }
-    _floor_block_ready = true;
+    _floor_sample_sum = 0;
 
-    MESH_DEBUG_PRINTLN("RadioLibWrapper: noise_floor = %d (median)", (int)_noise_floor);
+    MESH_DEBUG_PRINTLN("RadioLibWrapper: noise_floor = %d", (int)_noise_floor);
   }
 
   if (_cad_enabled && state == STATE_RX && getCADDetPeakBase() > 0
