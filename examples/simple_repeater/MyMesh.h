@@ -63,27 +63,6 @@ struct RepeaterStats {
   #define MAX_CLIENTS           32
 #endif
 
-#define MAX_PATH_PREFIX_LEN  4
-#define MAX_BLACKLIST_ENTRIES 16
-#define MAX_CHAN_NAME_FILTERS 8
-
-// Size of the 'temp' packet buffer used for CLI replies in onPeerDataRecv(),
-// and the resulting usable length after the 5-byte header. Any code that
-// formats a CLI reply must not write past CLI_REPLY_MAX_LEN bytes.
-#define CLI_REPLY_BUF_SIZE   166
-#define CLI_REPLY_MAX_LEN    (CLI_REPLY_BUF_SIZE - 5)
-
-struct BlacklistEntry {
-  uint8_t len;                          // 0 = empty slot
-  uint8_t prefix[MAX_PATH_PREFIX_LEN];
-};
-
-struct ChanNameFilter {
-  uint8_t hash[PATH_HASH_SIZE];
-  uint8_t secret[PUB_KEY_SIZE] = {0};   // full-size, zero-padded buffer (MACThenDecrypt() reads PUB_KEY_SIZE bytes)
-  char    name[32];
-};
-
 struct NeighbourInfo {
   mesh::Identity id;
   uint32_t advert_timestamp;
@@ -125,10 +104,6 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   unsigned long pending_discover_until;
   bool region_load_active;
   unsigned long dirty_contacts_expiry;
-  BlacklistEntry _path_blacklist[MAX_BLACKLIST_ENTRIES];
-  BlacklistEntry _chan_blacklist[MAX_BLACKLIST_ENTRIES];
-  ChanNameFilter _chan_name_filters[MAX_CHAN_NAME_FILTERS];
-  int _num_chan_name_filters;
 #if MAX_NEIGHBOURS
   NeighbourInfo neighbours[MAX_NEIGHBOURS];
 #endif
@@ -155,20 +130,6 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
 
   File openAppend(const char* fname);
   bool isLooped(const mesh::Packet* packet, const uint8_t max_counters[]);
-
-  bool isPathBlacklisted(const mesh::Packet* packet) const;
-  bool isChanBlacklisted(const mesh::Packet* packet) const;
-  void loadBlacklist(const char* fname, BlacklistEntry* list);
-  void saveBlacklist(const char* fname, const BlacklistEntry* list);
-  bool addToBlacklist(BlacklistEntry* list, const uint8_t* prefix, uint8_t len);
-  bool removeFromBlacklist(BlacklistEntry* list, const uint8_t* prefix, uint8_t len);
-  void formatBlacklist(const BlacklistEntry* list, char* reply);
-  void deriveChanNameFilter(ChanNameFilter& entry, const char* name);
-  bool addChanNameFilter(const char* name);
-  bool removeChanNameFilter(const char* name);
-  void loadChanBlacklist(const char* fname);
-  void saveChanBlacklist(const char* fname);
-  void formatChanBlacklist(char* reply, size_t max_len);
 
 protected:
   float getAirtimeBudgetFactor() const override {
@@ -207,7 +168,6 @@ protected:
 #endif
 
   mesh::DispatcherAction onRecvPacket(mesh::Packet* pkt) override;
-  bool filterRecvFloodPacket(mesh::Packet* pkt) override;
 
   void onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, const mesh::Identity& sender, uint8_t* data, size_t len) override;
   int searchPeersByHash(const uint8_t* hash) override;
