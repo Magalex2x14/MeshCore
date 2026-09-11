@@ -37,4 +37,9 @@ public:
   uint8_t getCADDetPeakBase() const override { return getSpreadingFactor() + 13; }  // Semtech DS.SX1261-2 recommended detPeak
 
   void doResetAGC() override { sx126xResetAGC((SX126x *)_radio, getRxBoostedGainMode()); }
+
+  // RX-desync watchdog probe: GetStatus byte, bits 6:4 = chip mode (0x5 = RX).
+  bool verifyRxChipMode() override {
+    return ((((CustomSTM32WLx *)_radio)->getStatus() >> 4) & 0x07) == 0x05;
+  }
 };
