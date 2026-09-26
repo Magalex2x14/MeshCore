@@ -4,6 +4,16 @@
 #include <RadioLib.h>
 #include "RXPowerSaving.h"
 
+// Noise-floor estimator: each block of NUM_NOISE_FLOOR_SAMPLES idle RSSI samples is
+// reduced to its median. Every idle sample is accepted (no "below floor + N" filter,
+// which was a one-way ratchet that could pin the floor at the -120 clamp).
+#define NUM_NOISE_FLOOR_SAMPLES  64
+// A block median this far ABOVE the published floor is treated as activity-contaminated
+// and held back, so the RSSI-margin LBT keeps an idle reference while the channel is busy.
+#define NOISE_FLOOR_MAX_RISE_DB  15
+// ...but only for this many consecutive blocks: a persistent rise must still be accepted.
+#define NOISE_FLOOR_MAX_HELD_BLOCKS  3
+
 #ifdef USE_CC310_HW_CRYPTO
 #include <Adafruit_nRFCrypto.h>
 #endif
@@ -22,7 +32,10 @@ protected:
   bool _last_metrics_valid;
   bool _cad_enabled;
   uint16_t _num_floor_samples;
-  int32_t _floor_sample_sum;
+  int16_t _floor_samples[NUM_NOISE_FLOOR_SAMPLES];
+  bool _floor_block_ready;           // current block already reduced (published or held)
+  unsigned long _last_floor_sample_at;
+  uint8_t _held_block_count;         // consecutive blocks held as contaminated
   uint8_t _preamble_sf;
 
   bool _rx_ps_enabled;
@@ -45,7 +58,8 @@ protected:
   void requestRestartRecv();
   bool isPacketPendingOrReceiving();
   void prepareForRadioConfig();
-  void sampleNoiseFloorOnce();
+  bool sampleNoiseFloorOnce(unsigned long min_interval_ms);
+  void restartNoiseFloorBlock();
   bool publishNoiseFloor();
   void noiseFloorCalibCheck();
   void endNoiseFloorCalib(unsigned long now);

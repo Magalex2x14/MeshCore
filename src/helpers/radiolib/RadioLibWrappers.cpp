@@ -8,16 +8,34 @@
 #define STATE_TX_DONE    4
 #define STATE_INT_READY 16
 
-#define NUM_NOISE_FLOOR_SAMPLES  64
-#define SAMPLING_THRESHOLD  14
-
 #define NF_CALIB_INTERVAL_MS 60000UL
 #define NF_CALIB_TIMEOUT_MS 5000UL
 #define NF_CALIB_SETTLE_MS 20UL
 #define NF_CALIB_SAMPLE_INTERVAL_MS 1UL
+// Sample spacing in continuous RX (RXPS off): a block spans >= ~3.2 s, so the median
+// rejects short transmissions in time, not just a few ms of correlated readings.
+#define NF_CONT_SAMPLE_INTERVAL_MS 50UL
+// Sample spacing inside an RXPS calibration window. Kept short on purpose: the window
+// holds the radio in continuous RX and keeps the MCU awake (hasPendingWork()), so a
+// 3.2 s block here would cost ~5% awake time per minute. A window that lands on a
+// transmission yields a high median, which the one-sided hold takes care of.
+#define NF_CALIB_WINDOW_SAMPLE_INTERVAL_MS 1UL
 #define NF_CALIB_MAX_SAMPLE_ATTEMPTS (NUM_NOISE_FLOOR_SAMPLES * 4U)
 
 static volatile uint8_t state = STATE_IDLE;
+
+// In-place insertion sort for the noise-floor median; runs once per block (64 items).
+static void sortInt16(int16_t* a, int n) {
+  for (int i = 1; i < n; i++) {
+    int16_t key = a[i];
+    int j = i - 1;
+    while (j >= 0 && a[j] > key) {
+      a[j + 1] = a[j];
+      j--;
+    }
+    a[j + 1] = key;
+  }
+}
 
 // this function is called when a complete packet
 // is transmitted by the module
@@ -44,9 +62,9 @@ void RadioLibWrapper::begin() {
   _threshold = 0;
   _cad_enabled = false;
 
-  // start average out some samples
-  _num_floor_samples = 0;
-  _floor_sample_sum = 0;
+  // start collecting the first noise-floor block (always published: floor is 0 here)
+  restartNoiseFloorBlock();
+  _held_block_count = 0;
 }
 
 uint32_t RadioLibWrapper::getRngSeed() {
@@ -71,9 +89,9 @@ void RadioLibWrapper::powerOff() {
 
 void RadioLibWrapper::triggerNoiseFloorCalibrate(int threshold) {
   _threshold = threshold;
-  if (_num_floor_samples >= NUM_NOISE_FLOOR_SAMPLES) {  // ignore trigger if currently sampling
-    _num_floor_samples = 0;
-    _floor_sample_sum = 0;
+  // ignore trigger while sampling, or while a full block still waits to be reduced
+  if (_num_floor_samples >= NUM_NOISE_FLOOR_SAMPLES && _floor_block_ready) {
+    restartNoiseFloorBlock();
   }
 }
 
@@ -90,12 +108,12 @@ void RadioLibWrapper::resetAGC() {
   doResetAGC();
   state = STATE_IDLE;
 
-  // Recalibrate synchronously so callers never observe the temporary zero
-  // used to bypass a stale sampling threshold after an AGC reset.
-  const int16_t previous_noise_floor = _noise_floor;
-  _noise_floor = 0;
-  _num_floor_samples = 0;
-  _floor_sample_sum = 0;
+  // Recalibrate synchronously. The previous _noise_floor stays published until a
+  // full block is reduced: the median estimator needs no reset-to-0 (that existed
+  // only to escape the old ratchet filter) and 0 would briefly make the RSSI-margin
+  // LBT permissive. Samples queued before the AFE reset are stale, so drop them.
+  restartNoiseFloorBlock();
+  _held_block_count = 0;   // contamination context is stale after an AFE reset
 
   _nf_calib_active = true;  // force startReceiveMode() into continuous RX
   bool packet_in_progress = false;
@@ -111,18 +129,15 @@ void RadioLibWrapper::resetAGC() {
         packet_in_progress = true;
         break;
       }
-      sampleNoiseFloorOnce();
+      sampleNoiseFloorOnce(0);
       if (_num_floor_samples < NUM_NOISE_FLOOR_SAMPLES) {
         delay(NF_CALIB_SAMPLE_INTERVAL_MS);
       }
     }
   }
 
-  if (!publishNoiseFloor()) {
-    _noise_floor = previous_noise_floor;
-    _num_floor_samples = 0;
-    _floor_sample_sum = 0;
-  }
+  // Incomplete block (a packet arrived): keep the old floor, start over later.
+  if (!publishNoiseFloor()) restartNoiseFloorBlock();
 
   _nf_calib_active = false;
   _nf_last_calib = millis();
@@ -134,25 +149,54 @@ void RadioLibWrapper::resetAGC() {
   if (!packet_in_progress) requestRestartRecv();
 }
 
-void RadioLibWrapper::sampleNoiseFloorOnce() {
-  int rssi = getCurrentRSSI();
-  if (rssi < _noise_floor + SAMPLING_THRESHOLD) {
-    _num_floor_samples++;
-    _floor_sample_sum += rssi;
-  }
+bool RadioLibWrapper::sampleNoiseFloorOnce(unsigned long min_interval_ms) {
+  if (_num_floor_samples >= NUM_NOISE_FLOOR_SAMPLES) return false;
+  unsigned long now = millis();
+  if (_num_floor_samples > 0 && now - _last_floor_sample_at < min_interval_ms) return false;
+  // Accept every idle sample: the median rejects outliers in both directions.
+  _floor_samples[_num_floor_samples++] = (int16_t)getCurrentRSSI();
+  _last_floor_sample_at = now;
+  return true;
 }
 
-bool RadioLibWrapper::publishNoiseFloor() {
-  if (_num_floor_samples < NUM_NOISE_FLOOR_SAMPLES || _floor_sample_sum == 0) return false;
+void RadioLibWrapper::restartNoiseFloorBlock() {
+  _num_floor_samples = 0;
+  _floor_block_ready = false;
+}
 
-  _noise_floor = _floor_sample_sum / NUM_NOISE_FLOOR_SAMPLES;
+// Reduce a complete block to its median and publish it, unless it jumps far above the
+// published floor (held as contaminated, bounded by NOISE_FLOOR_MAX_HELD_BLOCKS).
+// Returns true once the block has been consumed (published or held).
+bool RadioLibWrapper::publishNoiseFloor() {
+  if (_num_floor_samples < NUM_NOISE_FLOOR_SAMPLES || _floor_block_ready) return false;
+  _floor_block_ready = true;
+
+  sortInt16(_floor_samples, NUM_NOISE_FLOOR_SAMPLES);
+  int16_t median = (int16_t)(((int32_t)_floor_samples[NUM_NOISE_FLOOR_SAMPLES / 2 - 1] +
+                              (int32_t)_floor_samples[NUM_NOISE_FLOOR_SAMPLES / 2]) / 2);
+
+  // First block after boot always publishes (_noise_floor == 0 from begin()).
+  if (median > _noise_floor + NOISE_FLOOR_MAX_RISE_DB &&
+      ++_held_block_count < NOISE_FLOOR_MAX_HELD_BLOCKS) {
+    #ifdef MESH_DEBUG_NOISE_FLOOR
+    MESH_DEBUG_PRINTLN("RadioLibWrapper: noise_floor held at %d (block median %d, held %d/%d)",
+                       (int)_noise_floor, (int)median, (int)_held_block_count,
+                       NOISE_FLOOR_MAX_HELD_BLOCKS);
+    #endif
+    return true;
+  }
+
+  const bool persistent_rise = _held_block_count >= NOISE_FLOOR_MAX_HELD_BLOCKS;
+  (void)persistent_rise;   // only read by the debug print
+  _held_block_count = 0;
+  _noise_floor = median;
   if (_noise_floor < -120) {
     _noise_floor = -120;    // clamp to lower bound of -120dBi
   }
-  _floor_sample_sum = 0;
 
   #ifdef MESH_DEBUG_NOISE_FLOOR
-  MESH_DEBUG_PRINTLN("RadioLibWrapper: noise_floor = %d", (int)_noise_floor);
+  MESH_DEBUG_PRINTLN("RadioLibWrapper: noise_floor = %d (median%s)", (int)_noise_floor,
+                     persistent_rise ? ", accepted after held blocks" : "");
   #endif
   return true;
 }
@@ -188,8 +232,7 @@ void RadioLibWrapper::noiseFloorCalibCheck() {
     _nf_calib_active = true;
     _nf_calib_deadline = now + NF_CALIB_TIMEOUT_MS;
     _nf_sample_from = now + NF_CALIB_SETTLE_MS;
-    _num_floor_samples = 0;
-    _floor_sample_sum = 0;
+    restartNoiseFloorBlock();
     if (!isPacketPendingOrReceiving()) requestRestartRecv();
   }
 }
@@ -206,7 +249,8 @@ void RadioLibWrapper::loop() {
   if (state == STATE_RX && _num_floor_samples < NUM_NOISE_FLOOR_SAMPLES) {
     if (!_rx_ps_armed && !(_nf_calib_active && (long)(millis() - _nf_sample_from) < 0) &&
         !isReceivingPacket()) {
-      sampleNoiseFloorOnce();
+      sampleNoiseFloorOnce(_nf_calib_active ? NF_CALIB_WINDOW_SAMPLE_INTERVAL_MS
+                                            : NF_CONT_SAMPLE_INTERVAL_MS);
     }
   } else if (publishNoiseFloor()) {
     if (_nf_calib_active) endNoiseFloorCalib(millis());
