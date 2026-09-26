@@ -8,10 +8,20 @@
 #define STATE_TX_DONE    4
 #define STATE_INT_READY 16
 
-#define NUM_NOISE_FLOOR_SAMPLES  64
-#define SAMPLING_THRESHOLD  14
-
 static volatile uint8_t state = STATE_IDLE;
+
+// In-place insertion sort for the noise-floor median; runs once per block (64 items).
+static void sortInt16(int16_t* a, int n) {
+  for (int i = 1; i < n; i++) {
+    int16_t key = a[i];
+    int j = i - 1;
+    while (j >= 0 && a[j] > key) {
+      a[j + 1] = a[j];
+      j--;
+    }
+    a[j + 1] = key;
+  }
+}
 
 // this function is called when a complete packet
 // is transmitted by the module
@@ -38,9 +48,10 @@ void RadioLibWrapper::begin() {
   _threshold = 0;
   _cad_enabled = false;
 
-  // start average out some samples
-  _num_floor_samples = 0;
-  _floor_sample_sum = 0;
+  // start collecting the first noise-floor block (always published: floor is 0 here)
+  restartNoiseFloorBlock();
+  _last_floor_sample_at = 0;
+  _held_block_count = 0;
 }
 
 uint32_t RadioLibWrapper::getRngSeed() {
@@ -61,9 +72,9 @@ void RadioLibWrapper::idle() {
 
 void RadioLibWrapper::triggerNoiseFloorCalibrate(int threshold) {
   _threshold = threshold;
-  if (_num_floor_samples >= NUM_NOISE_FLOOR_SAMPLES) {  // ignore trigger if currently sampling
-    _num_floor_samples = 0;
-    _floor_sample_sum = 0;
+  // ignore trigger while sampling, or while a full block still waits to be reduced
+  if (_num_floor_samples >= NUM_NOISE_FLOOR_SAMPLES && _floor_block_ready) {
+    restartNoiseFloorBlock();
   }
 }
 
@@ -78,34 +89,67 @@ void RadioLibWrapper::resetAGC() {
   doResetAGC();
   state = STATE_IDLE;   // trigger a startReceive()
 
-  // Reset noise floor sampling so it reconverges from scratch.
-  // Without this, a stuck _noise_floor of -120 makes the sampling threshold
-  // too low (-106) to accept normal samples (~-105), self-reinforcing the
-  // stuck value even after the receiver has recovered.
-  _noise_floor = 0;
+  // Discard the in-progress block: the analog frontend was just reset, so queued
+  // samples are stale. _noise_floor itself stays published until the next full block:
+  // the median estimator needs no reset-to-0 (that existed only to escape the old
+  // ratchet filter), and 0 would briefly make the RSSI-margin LBT permissive.
+  restartNoiseFloorBlock();
+  _held_block_count = 0;   // contamination context is stale after an AFE reset
+}
+
+void RadioLibWrapper::restartNoiseFloorBlock() {
   _num_floor_samples = 0;
-  _floor_sample_sum = 0;
+  _floor_block_ready = false;
+}
+
+// Reduce a complete block to its median and publish it, unless it jumps far above the
+// published floor (held as contaminated, bounded by NOISE_FLOOR_MAX_HELD_BLOCKS).
+// Returns true once the block has been consumed (published or held).
+bool RadioLibWrapper::publishNoiseFloor() {
+  if (_num_floor_samples < NUM_NOISE_FLOOR_SAMPLES || _floor_block_ready) return false;
+  _floor_block_ready = true;
+
+  sortInt16(_floor_samples, NUM_NOISE_FLOOR_SAMPLES);
+  int16_t median = (int16_t)(((int32_t)_floor_samples[NUM_NOISE_FLOOR_SAMPLES / 2 - 1] +
+                              (int32_t)_floor_samples[NUM_NOISE_FLOOR_SAMPLES / 2]) / 2);
+
+  // First block after boot always publishes (_noise_floor == 0 from begin()).
+  if (median > _noise_floor + NOISE_FLOOR_MAX_RISE_DB &&
+      ++_held_block_count < NOISE_FLOOR_MAX_HELD_BLOCKS) {
+    #ifdef MESH_DEBUG_NOISE_FLOOR
+    MESH_DEBUG_PRINTLN("RadioLibWrapper: noise_floor held at %d (block median %d, held %d/%d)",
+                       (int)_noise_floor, (int)median, (int)_held_block_count,
+                       NOISE_FLOOR_MAX_HELD_BLOCKS);
+    #endif
+    return true;
+  }
+
+  const bool persistent_rise = _held_block_count >= NOISE_FLOOR_MAX_HELD_BLOCKS;
+  (void)persistent_rise;   // only read by the debug print
+  _held_block_count = 0;
+  _noise_floor = median;
+  if (_noise_floor < -120) {
+    _noise_floor = -120;    // clamp to lower bound of -120dBi
+  }
+
+  #ifdef MESH_DEBUG_NOISE_FLOOR
+  MESH_DEBUG_PRINTLN("RadioLibWrapper: noise_floor = %d (median%s)", (int)_noise_floor,
+                     persistent_rise ? ", accepted after held blocks" : "");
+  #endif
+  return true;
 }
 
 void RadioLibWrapper::loop() {
   if (state == STATE_RX && _num_floor_samples < NUM_NOISE_FLOOR_SAMPLES) {
-    if (!isReceivingPacket()) {
-      int rssi = getCurrentRSSI();
-      if (rssi < _noise_floor + SAMPLING_THRESHOLD) {  // only consider samples below current floor + sampling THRESHOLD
-        _num_floor_samples++;
-        _floor_sample_sum += rssi;
-      }
+    unsigned long now = millis();
+    if (!isReceivingPacket() &&
+        (_num_floor_samples == 0 || now - _last_floor_sample_at >= NOISE_FLOOR_SAMPLE_INTERVAL_MS)) {
+      // Accept every idle sample: the median rejects outliers in both directions.
+      _floor_samples[_num_floor_samples++] = (int16_t)getCurrentRSSI();
+      _last_floor_sample_at = now;
     }
-  } else if (_num_floor_samples >= NUM_NOISE_FLOOR_SAMPLES && _floor_sample_sum != 0) {
-    _noise_floor = _floor_sample_sum / NUM_NOISE_FLOOR_SAMPLES;
-    if (_noise_floor < -120) {
-      _noise_floor = -120;    // clamp to lower bound of -120dBi
-    }
-    _floor_sample_sum = 0;
-
-    #ifdef MESH_DEBUG_NOISE_FLOOR
-    MESH_DEBUG_PRINTLN("RadioLibWrapper: noise_floor = %d", (int)_noise_floor);
-    #endif
+  } else {
+    publishNoiseFloor();
   }
 }
 

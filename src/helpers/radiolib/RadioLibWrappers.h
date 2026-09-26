@@ -3,6 +3,19 @@
 #include <Mesh.h>
 #include <RadioLib.h>
 
+// Noise-floor estimator: each block of NUM_NOISE_FLOOR_SAMPLES idle RSSI samples is
+// reduced to its median. Every idle sample is accepted (no "below floor + N" filter,
+// which was a one-way ratchet that could pin the floor at the -120 clamp).
+#define NUM_NOISE_FLOOR_SAMPLES  64
+// Min spacing between samples, so a block spans >= ~3.2 s and the median rejects
+// short transmissions in time, not just a few ms of correlated readings.
+#define NOISE_FLOOR_SAMPLE_INTERVAL_MS  50
+// A block median this far ABOVE the published floor is treated as activity-contaminated
+// and held back, so the RSSI-margin LBT keeps an idle reference while the channel is busy.
+#define NOISE_FLOOR_MAX_RISE_DB  15
+// ...but only for this many consecutive blocks: a persistent rise must still be accepted.
+#define NOISE_FLOOR_MAX_HELD_BLOCKS  3
+
 #ifdef USE_CC310_HW_CRYPTO
 #include <Adafruit_nRFCrypto.h>
 #endif
@@ -19,11 +32,16 @@ protected:
   int16_t _noise_floor, _threshold;
   bool _cad_enabled;
   uint16_t _num_floor_samples;
-  int32_t _floor_sample_sum;
+  int16_t _floor_samples[NUM_NOISE_FLOOR_SAMPLES];
+  bool _floor_block_ready;           // current block already reduced (published or held)
+  unsigned long _last_floor_sample_at;
+  uint8_t _held_block_count;         // consecutive blocks held as contaminated
   uint8_t _preamble_sf;
 
   void idle();
   void startRecv();
+  void restartNoiseFloorBlock();
+  bool publishNoiseFloor();
   float packetScoreInt(float snr, int sf, int packet_len);
   virtual bool isReceivingPacket() =0;
   virtual void doResetAGC();
