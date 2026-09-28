@@ -40,6 +40,11 @@ static uint8_t channel = NRF52_WIRELESS_CHANNEL;
 static char secret[16] = NRF52_WIRELESS_SECRET;   // same size as repeater bridge_secret
 static KeyValueStore* prefs_store = NULL;
 
+// counters for get bridge.stats
+static volatile uint32_t stat_addr = 0, stat_crc_ok = 0, stat_crc_err = 0, stat_tx = 0;
+static uint32_t stat_bad_magic = 0, stat_bad_sum = 0;
+static int stat_noise_floor = 0;
+
 static uint8_t channelToFrequency(uint8_t ch) {
   static const uint8_t freqs[NRF52WirelessRadio::NUM_CHANNELS] = { 82, 50, 24 };  // 2482, 2450, 2424 MHz (same as NRF52RadioBridge)
   if (ch < 1 || ch > NRF52WirelessRadio::NUM_CHANNELS) ch = 1;
@@ -140,6 +145,7 @@ extern "C" void RADIO_IRQHandler(void) {
   if (NRF_RADIO->EVENTS_ADDRESS) {
     NRF_RADIO->EVENTS_ADDRESS = 0;
     if (state == STATE_RX) rx_busy = true;
+    stat_addr++;
   }
 
   if (NRF_RADIO->EVENTS_END) {
@@ -147,11 +153,14 @@ extern "C" void RADIO_IRQHandler(void) {
     if (state == STATE_RX) {
       rx_busy = false;
       if (NRF_RADIO->CRCSTATUS == RADIO_CRCSTATUS_CRCSTATUS_CRCOk) {
+        stat_crc_ok++;
         rx_rssi[rx_head] = -(int8_t)NRF_RADIO->RSSISAMPLE;
         uint8_t next = (rx_head + 1) % RX_SLOTS;
         if (next != rx_tail) { // commit, otherwise ring is full and frame is dropped
           rx_head = next;
         }
+      } else {
+        stat_crc_err++;
       }
       // radio sits in RXIDLE after END, re-arm with the (possibly new) slot
       NRF_RADIO->PACKETPTR = (uint32_t)rx_frames[rx_head];
@@ -162,6 +171,7 @@ extern "C" void RADIO_IRQHandler(void) {
   if (NRF_RADIO->EVENTS_DISABLED) {
     NRF_RADIO->EVENTS_DISABLED = 0;
     if (state == STATE_TX) {
+      stat_tx++;
       is_send_complete = true;
       startRx();
     }
@@ -353,7 +363,10 @@ int NRF52WirelessRadio::recvRaw(uint8_t* bytes, int sz) {
 
     if (len < BRIDGE_MAGIC_SIZE + BRIDGE_CHECKSUM_SIZE) continue;  // too small
     uint16_t magic = (decrypted[0] << 8) | decrypted[1];
-    if (magic != BRIDGE_PACKET_MAGIC && magic != BRIDGE_PACKET_MAGIC_LEVELS) continue;  // not a bridge packet
+    if (magic != BRIDGE_PACKET_MAGIC && magic != BRIDGE_PACKET_MAGIC_LEVELS) {  // not a bridge packet
+      stat_bad_magic++;
+      continue;
+    }
 
     uint8_t *data = &decrypted[BRIDGE_MAGIC_SIZE];
     size_t data_len = len - BRIDGE_MAGIC_SIZE;
@@ -364,6 +377,7 @@ int NRF52WirelessRadio::recvRaw(uint8_t* bytes, int sz) {
     if (fletcher16(&data[BRIDGE_CHECKSUM_SIZE], payload_len) != received_checksum || payload_len > sz) {
       // failed to decrypt - likely from a different network
       n_recv_errors++;
+      stat_bad_sum++;
       continue;
     }
 
@@ -376,7 +390,7 @@ int NRF52WirelessRadio::recvRaw(uint8_t* bytes, int sz) {
       // levels the repeater received the packet with, and its noise floor
       int8_t snr_x4 = (int8_t)payload[0];
       int8_t rep_rssi = (int8_t)payload[1];
-      _noise_floor = (int8_t)payload[2];
+      _noise_floor = stat_noise_floor = (int8_t)payload[2];
       payload += BRIDGE_LEVELS_SIZE;
       payload_len -= BRIDGE_LEVELS_SIZE;
       if (payload_len == 0) continue;  // levels-only update
@@ -447,6 +461,23 @@ bool NRF52WirelessRadio::handleCommand(const char* command, char* reply) {
     } else {
       sprintf(reply, "Error: channel must be between 1-%d", NUM_CHANNELS);
     }
+    return true;
+  }
+  if (strcmp(command, "get bridge.stats") == 0) {
+    int rssi = 0;
+    if (state == STATE_RX && !rx_busy) {
+      NRF_RADIO->EVENTS_RSSIEND = 0;
+      NRF_RADIO->TASKS_RSSISTART = 1;
+      uint32_t start = micros();
+      while (!NRF_RADIO->EVENTS_RSSIEND && micros() - start < 50) {
+      }
+      rssi = -(int)NRF_RADIO->RSSISAMPLE;
+    }
+    // addr: address matches (incl. other nRF traffic), crc ok/err, magic: not a bridge frame,
+    // sum: bad checksum (other bridge.secret), tx: frames sent, st: radio state, hf: HFCLKSTAT
+    sprintf(reply, "> addr:%u crc_ok:%u crc_err:%u magic:%u sum:%u tx:%u st:%d hf:%lx ch:%d nf:%d rssi:%d",
+            stat_addr, stat_crc_ok, stat_crc_err, stat_bad_magic, stat_bad_sum, stat_tx, (int)state,
+            (unsigned long)NRF_CLOCK->HFCLKSTAT, (int)channel, stat_noise_floor, rssi);
     return true;
   }
   if (strcmp(command, "get bridge.secret") == 0) {
