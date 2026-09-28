@@ -416,6 +416,11 @@ void NRF52RadioBridge::processRxFrame(const RadioFrame *frame) {
 
   BRIDGE_DEBUG_PRINTLN("RX, payload_len=%d, rssi=%d\n", payloadLen, frame->rssi);
 
+  // for the repeater's receive stats (last RSSI / SNR)
+  _last_rx_millis = millis();
+  _last_rx_rssi = frame->rssi;
+  _has_rx_levels = true;
+
   // Create mesh packet
   mesh::Packet *pkt = _mgr->allocNew();
   if (!pkt) return;

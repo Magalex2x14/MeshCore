@@ -147,6 +147,8 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
 #elif defined(WITH_NRF52_WIRELESS_BRIDGE)
   NRF52RadioBridge bridge;
 #endif
+  unsigned long last_radio_rx_millis;
+  void getLastRxLevels(float &rssi, float &snr);
 #if defined(WITH_BRIDGE)
   unsigned long next_bridge_levels;
   void sendBridgeCompanion(mesh::Packet* pkt, int8_t snr_x4, int8_t rssi);

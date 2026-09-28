@@ -234,7 +234,9 @@ int MyMesh::handleRequest(ClientInfo *sender, uint32_t sender_timestamp, uint8_t
     stats.batt_milli_volts = board.getBattMilliVolts();
     stats.curr_tx_queue_len = _mgr->getOutboundTotal();
     stats.noise_floor = (int16_t)_radio->getNoiseFloor();
-    stats.last_rssi = (int16_t)radio_driver.getLastRSSI();
+    float last_rssi, last_snr;
+    getLastRxLevels(last_rssi, last_snr);
+    stats.last_rssi = (int16_t)last_rssi;
     stats.n_packets_recv = radio_driver.getPacketsRecv();
     stats.n_packets_sent = radio_driver.getPacketsSent();
     stats.total_air_time_secs = getTotalAirTime() / 1000;
@@ -244,7 +246,7 @@ int MyMesh::handleRequest(ClientInfo *sender, uint32_t sender_timestamp, uint8_t
     stats.n_recv_flood = getNumRecvFlood();
     stats.n_recv_direct = getNumRecvDirect();
     stats.err_events = _err_flags;
-    stats.last_snr = (int16_t)(radio_driver.getLastSNR() * 4);
+    stats.last_snr = (int16_t)(last_snr * 4);
     stats.n_direct_dups = ((SimpleMeshTables *)getTables())->getNumDirectDups();
     stats.n_flood_dups = ((SimpleMeshTables *)getTables())->getNumFloodDups();
     stats.total_rx_air_time_secs = getReceiveAirTime() / 1000;
@@ -779,6 +781,7 @@ const char *MyMesh::getLogDateTime() {
 }
 
 void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
+  last_radio_rx_millis = millis();
 #if MESH_PACKET_LOGGING
   Serial.print(getLogDateTime());
   Serial.print(" RAW: ");
@@ -1215,6 +1218,7 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   last_millis = 0;
   uptime_millis = 0;
   next_local_advert = next_flood_advert = 0;
+  last_radio_rx_millis = 0;
 #ifdef WITH_BRIDGE
   next_bridge_levels = 0;
 #endif
@@ -1512,8 +1516,28 @@ void MyMesh::formatStatsReply(char *reply) {
   StatsFormatHelper::formatCoreStats(reply, board, *_ms, _err_flags, _mgr);
 }
 
+// levels of the last received packet: from the LoRa radio, or from the bridge if that was more recent
+void MyMesh::getLastRxLevels(float &rssi, float &snr) {
+  rssi = radio_driver.getLastRSSI();
+  snr = radio_driver.getLastSNR();
+#ifdef WITH_BRIDGE
+  uint32_t at_millis;
+  int8_t bridge_rssi;
+  if (bridge.getLastRxLevels(at_millis, bridge_rssi) && (int32_t)(at_millis - last_radio_rx_millis) > 0) {
+    rssi = bridge_rssi;
+    snr = BridgeBase::BRIDGE_RX_SNR_X4 / 4.0f;
+  }
+#endif
+}
+
 void MyMesh::formatRadioStatsReply(char *reply) {
-  StatsFormatHelper::formatRadioStats(reply, _radio, radio_driver, getTotalAirTime(), getReceiveAirTime());
+  struct {
+    float rssi, snr;
+    float getLastRSSI() const { return rssi; }
+    float getLastSNR() const { return snr; }
+  } last_rx;
+  getLastRxLevels(last_rx.rssi, last_rx.snr);
+  StatsFormatHelper::formatRadioStats(reply, _radio, last_rx, getTotalAirTime(), getReceiveAirTime());
 }
 
 void MyMesh::formatPacketStatsReply(char *reply) {

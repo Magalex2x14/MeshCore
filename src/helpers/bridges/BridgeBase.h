@@ -30,6 +30,19 @@ public:
   bool isRunning() const override;
 
   /**
+   * @brief Gets the levels of the last packet received over the bridge, for the receive stats
+   *
+   * @param at_millis millis() when it was received
+   * @param rssi its RSSI in dBm (its SNR is BRIDGE_RX_SNR_X4)
+   * @return false if the bridge has no RSSI (not a radio bridge) or received nothing yet
+   */
+  bool getLastRxLevels(uint32_t &at_millis, int8_t &rssi) const {
+    at_millis = _last_rx_millis;
+    rssi = _last_rx_rssi;
+    return _has_rx_levels;
+  }
+
+  /**
    * @brief Common magic number used by all bridge implementations for packet identification
    *
    * This magic number is placed at the beginning of bridge packets to identify
@@ -71,6 +84,11 @@ public:
 protected:
   /** Tracks bridge state */
   bool _initialized = false;
+
+  /** Levels of the last received packet, set by radio bridges (see getLastRxLevels()) */
+  bool _has_rx_levels = false;
+  uint32_t _last_rx_millis = 0;
+  int8_t _last_rx_rssi = 0;
 
   /** Packet manager for allocating and queuing mesh packets */
   mesh::PacketManager *_mgr;
