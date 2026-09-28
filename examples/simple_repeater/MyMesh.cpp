@@ -1812,8 +1812,9 @@ void MyMesh::loop() {
 
 // To check if there is pending work
 bool MyMesh::hasPendingWork() const {
-#if defined(WITH_BRIDGE)
+#if defined(WITH_BRIDGE) && !defined(WITH_NRF52_WIRELESS_BRIDGE)
   if (bridge.isRunning()) return true;  // bridge needs WiFi radio, can't sleep
 #endif
+  // nRF52 2.4GHz bridge: sleeping is only WFE, the RADIO keeps receiving and its interrupt wakes us
   return _mgr->getOutboundTotal() > 0;
 }
