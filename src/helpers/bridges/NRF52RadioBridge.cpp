@@ -231,6 +231,13 @@ void NRF52RadioBridge::end() {
 
   if (_hfxo_started) {
     NRF_CLOCK->TASKS_HFCLKSTOP = 1;
+    // HFCLKSTAT only switches back to HFINT a little later: wait for it, otherwise a begin() right
+    // after (restartBridge) still sees the HFXO running, doesn't start it again and the radio ends
+    // up without it (no TX/RX until reboot)
+    uint32_t start = micros();
+    while ((NRF_CLOCK->HFCLKSTAT & CLOCK_HFCLKSTAT_SRC_Msk) == (CLOCK_HFCLKSTAT_SRC_Xtal << CLOCK_HFCLKSTAT_SRC_Pos) &&
+           (micros() - start) < 1000) {
+    }
     _hfxo_started = false;
   }
 
