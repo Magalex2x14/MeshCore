@@ -6,7 +6,7 @@
   #define BRIDGE_COMPANION_TX_SNR_X4  50      // +12.5 dB
 #endif
 #ifndef BRIDGE_COMPANION_TX_RSSI
-  #define BRIDGE_COMPANION_TX_RSSI    -30     // dBm
+  #define BRIDGE_COMPANION_TX_RSSI    BridgeBase::BRIDGE_LEVELS_RSSI_LINK  // dBm, default: RSSI of the bridge link
 #endif
 #ifndef BRIDGE_COMPANION_LEVELS_INTERVAL
   #define BRIDGE_COMPANION_LEVELS_INTERVAL 30000  // ms, levels-only update (noise floor) without traffic

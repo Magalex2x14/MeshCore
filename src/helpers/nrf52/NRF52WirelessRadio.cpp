@@ -12,6 +12,7 @@
 #define BRIDGE_PACKET_MAGIC          0xC03E
 #define BRIDGE_PACKET_MAGIC_LEVELS   0xC03F   // + SNR x4, RSSI, noise floor (bridge.source companion)
 #define BRIDGE_LEVELS_SIZE           3
+#define BRIDGE_LEVELS_RSSI_LINK      127      // RSSI: use the one of the bridge link (repeater's own transmissions)
 #define BRIDGE_MAGIC_SIZE            2
 #define BRIDGE_CHECKSUM_SIZE         2
 
@@ -396,7 +397,7 @@ int NRF52WirelessRadio::recvRaw(uint8_t* bytes, int sz) {
       if (payload_len == 0) continue;  // levels-only update
 
       _last_snr = snr_x4 / 4.0f;
-      _last_rssi = rep_rssi;
+      _last_rssi = rep_rssi == BRIDGE_LEVELS_RSSI_LINK ? rssi : rep_rssi;
     } else {
       _last_snr = 0;
       _last_rssi = rssi;  // 2.4GHz link

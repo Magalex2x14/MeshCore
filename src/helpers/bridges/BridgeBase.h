@@ -47,6 +47,9 @@ public:
   static constexpr uint16_t BRIDGE_PACKET_MAGIC_LEVELS = 0xC03F;
   static constexpr uint16_t BRIDGE_LEVELS_SIZE = 3;
 
+  /** RSSI value meaning "use the RSSI of the bridge link itself" (e.g. the repeater's own transmissions) */
+  static constexpr int8_t BRIDGE_LEVELS_RSSI_LINK = 127;
+
   /**
    * @brief Common field sizes used by bridge implementations
    *

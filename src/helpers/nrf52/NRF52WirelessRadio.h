@@ -34,8 +34,9 @@ public:
  *
  * With bridge.source companion on the repeater, bridge packets also carry the SNR/RSSI the repeater
  * received them with and its noise floor (BRIDGE_PACKET_MAGIC_LEVELS). They are reported as the
- * levels of this radio, so the node behaves as if it were on air next to the repeater. Plain bridge
- * packets report the 2.4GHz RSSI and no SNR.
+ * levels of this radio, so the node behaves as if it were on air next to the repeater (for the
+ * repeater's own transmissions the RSSI of the 2.4GHz link is used). Plain bridge packets report the
+ * 2.4GHz RSSI and no SNR.
  *
  * The RADIO peripheral is driven directly, so the SoftDevice must NOT be enabled (no BLE).
  */
