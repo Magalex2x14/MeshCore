@@ -245,17 +245,22 @@ void NRF52WirelessRadio::powerOff() {
   NRF_RADIO->POWER = 0;
 }
 
-uint32_t NRF52WirelessRadio::getRngSeed() {
-  uint32_t seed = 0;
+void NRF52HardwareRNG::random(uint8_t* dest, size_t sz) {
   NRF_RNG->CONFIG = RNG_CONFIG_DERCEN_Msk;
   NRF_RNG->TASKS_START = 1;
-  for (int i = 0; i < 4; i++) {
+  for (size_t i = 0; i < sz; i++) {
     NRF_RNG->EVENTS_VALRDY = 0;
     while (!NRF_RNG->EVENTS_VALRDY) {
     }
-    seed = (seed << 8) | NRF_RNG->VALUE;
+    dest[i] = NRF_RNG->VALUE;
   }
   NRF_RNG->TASKS_STOP = 1;
+}
+
+uint32_t NRF52WirelessRadio::getRngSeed() {
+  uint32_t seed;
+  NRF52HardwareRNG rng;
+  rng.random((uint8_t *)&seed, sizeof(seed));
   return seed;
 }
 

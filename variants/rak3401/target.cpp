@@ -17,9 +17,13 @@ RAK3401Board board;
   #endif
 #endif
 
+#ifdef NRF52_WIRELESS_RADIO
+WRAPPER_CLASS radio_driver;
+#else
 RADIO_CLASS radio = new Module(P_LORA_NSS, P_LORA_DIO_1, P_LORA_RESET, P_LORA_BUSY, SPI);
 
 WRAPPER_CLASS radio_driver(radio, board);
+#endif
 
 VolatileRTCClock fallback_clock;
 AutoDiscoverRTCClock rtc_clock(fallback_clock);
@@ -34,11 +38,20 @@ AutoDiscoverRTCClock rtc_clock(fallback_clock);
 
 bool radio_init() {
   rtc_clock.begin(Wire);
+#ifdef NRF52_WIRELESS_RADIO
+  digitalWrite(SX126X_POWER_EN, LOW);  // LoRa FEM (SKY66122) not used
+  return radio_driver.init();
+#else
   return radio.std_init(&SPI);
+#endif
 }
 
 mesh::LocalIdentity radio_new_identity() {
+#ifdef NRF52_WIRELESS_RADIO
+  NRF52HardwareRNG rng;
+#else
   RadioNoiseListener rng(radio);
+#endif
   return mesh::LocalIdentity(&rng);  // create new random identity
 }
 

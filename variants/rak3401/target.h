@@ -4,7 +4,11 @@
 #include <RadioLib.h>
 #include <helpers/radiolib/RadioLibWrappers.h>
 #include <RAK3401Board.h>
-#include <helpers/radiolib/CustomSX1262Wrapper.h>
+#ifdef NRF52_WIRELESS_RADIO
+  #include <helpers/nrf52/NRF52WirelessRadio.h>
+#else
+  #include <helpers/radiolib/CustomSX1262Wrapper.h>
+#endif
 #include <helpers/AutoDiscoverRTCClock.h>
 #include <helpers/sensors/EnvironmentSensorManager.h>
 

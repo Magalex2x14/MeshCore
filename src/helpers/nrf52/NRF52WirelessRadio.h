@@ -13,6 +13,14 @@
 #endif
 
 /**
+ * nRF52 hardware RNG (available as the SoftDevice is not enabled)
+ */
+class NRF52HardwareRNG : public mesh::RNG {
+public:
+  void random(uint8_t* dest, size_t sz) override;
+};
+
+/**
  * Radio driver using the nRF52 2.4GHz RADIO peripheral instead of a LoRa module.
  *
  * It speaks the same air protocol as NRF52RadioBridge (1Mbit GFSK, custom framing, bridge magic,
