@@ -97,6 +97,8 @@ private:
   static uint8_t channelToFrequency(uint8_t channel);
 
   void configureRadio();
+  static bool isHfxoRunning();
+  static bool startHfxo();
   void startRx();
   bool isChannelClear();
   void transmitFrame(RadioFrame *frame);

@@ -45,6 +45,23 @@ static KeyValueStore* prefs_store = NULL;
 static volatile uint32_t stat_addr = 0, stat_crc_ok = 0, stat_crc_err = 0, stat_tx = 0;
 static uint32_t stat_bad_magic = 0, stat_bad_sum = 0;
 static int stat_noise_floor = 0;
+static uint32_t stat_hfxo_restarts = 0;
+
+static bool isHfxoRunning() {
+  return (NRF_CLOCK->HFCLKSTAT & (CLOCK_HFCLKSTAT_SRC_Msk | CLOCK_HFCLKSTAT_STATE_Msk)) ==
+         ((CLOCK_HFCLKSTAT_SRC_Xtal << CLOCK_HFCLKSTAT_SRC_Pos) | CLOCK_HFCLKSTAT_STATE_Msk);
+}
+
+static bool startHfxo() {
+  NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
+  NRF_CLOCK->TASKS_HFCLKSTART = 1;
+  uint32_t start = millis();
+  while (!NRF_CLOCK->EVENTS_HFCLKSTARTED) {
+    if (millis() - start > 10) return false;
+  }
+  NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
+  return true;
+}
 
 static uint8_t channelToFrequency(uint8_t ch) {
   static const uint8_t freqs[NRF52WirelessRadio::NUM_CHANNELS] = { 82, 50, 24 };  // 2482, 2450, 2424 MHz (same as NRF52RadioBridge)
@@ -230,18 +247,9 @@ bool NRF52WirelessRadio::init() {
   }
 
   // RADIO requires the external high frequency crystal
-  if ((NRF_CLOCK->HFCLKSTAT & (CLOCK_HFCLKSTAT_SRC_Msk | CLOCK_HFCLKSTAT_STATE_Msk)) !=
-      ((CLOCK_HFCLKSTAT_SRC_Xtal << CLOCK_HFCLKSTAT_SRC_Pos) | CLOCK_HFCLKSTAT_STATE_Msk)) {
-    NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
-    NRF_CLOCK->TASKS_HFCLKSTART = 1;
-    uint32_t start = millis();
-    while (!NRF_CLOCK->EVENTS_HFCLKSTARTED) {
-      if (millis() - start > 10) {
-        MESH_DEBUG_PRINTLN("NRF52WirelessRadio: HFXO failed to start");
-        return false;
-      }
-    }
-    NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
+  if (!isHfxoRunning() && !startHfxo()) {
+    MESH_DEBUG_PRINTLN("NRF52WirelessRadio: HFXO failed to start");
+    return false;
   }
 
   rx_head = rx_tail = 0;
@@ -316,6 +324,15 @@ bool NRF52WirelessRadio::startSendRaw(const uint8_t* bytes, int len) {
 }
 
 void NRF52WirelessRadio::loop() {
+  // Without the SoftDevice nothing counts HFXO requests, so others can stop it while we use it
+  // (e.g. TinyUSB on USB unplug). The radio doesn't work without it: start it again, and retune.
+  if (state != STATE_OFF && !isHfxoRunning() && startHfxo()) {
+    stat_hfxo_restarts++;
+    tx_pending = false;
+    restartRadio();
+    is_send_complete = true;  // drops a frame being sent
+  }
+
   if (!tx_pending) return;
   if ((int32_t)(millis() - tx_next_attempt) < 0) return; // backing off
 
@@ -475,10 +492,11 @@ bool NRF52WirelessRadio::handleCommand(const char* command, char* reply) {
       rssi = -(int)NRF_RADIO->RSSISAMPLE;
     }
     // addr: address matches (incl. other nRF traffic), crc ok/err, magic: not a bridge frame,
-    // sum: bad checksum (other bridge.secret), tx: frames sent, st: radio state, hf: HFCLKSTAT
-    sprintf(reply, "> addr:%u crc_ok:%u crc_err:%u magic:%u sum:%u tx:%u st:%d hf:%lx ch:%d nf:%d rssi:%d",
+    // sum: bad checksum (other bridge.secret), tx: frames sent, st: radio state, hf: HFCLKSTAT,
+    // hfr: HFXO restarts after someone else stopped it
+    sprintf(reply, "> addr:%u crc_ok:%u crc_err:%u magic:%u sum:%u tx:%u st:%d hf:%lx hfr:%u ch:%d nf:%d rssi:%d",
             stat_addr, stat_crc_ok, stat_crc_err, stat_bad_magic, stat_bad_sum, stat_tx, (int)state,
-            (unsigned long)NRF_CLOCK->HFCLKSTAT, (int)channel, stat_noise_floor, rssi);
+            (unsigned long)NRF_CLOCK->HFCLKSTAT, stat_hfxo_restarts, (int)channel, stat_noise_floor, rssi);
     return true;
   }
   if (strcmp(command, "get bridge.secret") == 0) {

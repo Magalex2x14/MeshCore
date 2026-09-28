@@ -161,6 +161,25 @@ void NRF52RadioBridge::onRadioIrq() {
   (void)NRF_RADIO->EVENTS_DISABLED;
 }
 
+bool NRF52RadioBridge::isHfxoRunning() {
+  return (NRF_CLOCK->HFCLKSTAT & (CLOCK_HFCLKSTAT_SRC_Msk | CLOCK_HFCLKSTAT_STATE_Msk)) ==
+         ((CLOCK_HFCLKSTAT_SRC_Xtal << CLOCK_HFCLKSTAT_SRC_Pos) | CLOCK_HFCLKSTAT_STATE_Msk);
+}
+
+bool NRF52RadioBridge::startHfxo() {
+  NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
+  NRF_CLOCK->TASKS_HFCLKSTART = 1;
+  uint32_t start = millis();
+  while (!NRF_CLOCK->EVENTS_HFCLKSTARTED) {
+    if (millis() - start > 10) {
+      NRF_CLOCK->TASKS_HFCLKSTOP = 1;
+      return false;
+    }
+  }
+  NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
+  return true;
+}
+
 void NRF52RadioBridge::begin() {
   BRIDGE_DEBUG_PRINTLN("Initializing...\n");
 
@@ -173,19 +192,11 @@ void NRF52RadioBridge::begin() {
   }
 
   // RADIO requires the external high frequency crystal
-  if ((NRF_CLOCK->HFCLKSTAT & (CLOCK_HFCLKSTAT_SRC_Msk | CLOCK_HFCLKSTAT_STATE_Msk)) !=
-      ((CLOCK_HFCLKSTAT_SRC_Xtal << CLOCK_HFCLKSTAT_SRC_Pos) | CLOCK_HFCLKSTAT_STATE_Msk)) {
-    NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
-    NRF_CLOCK->TASKS_HFCLKSTART = 1;
-    uint32_t start = millis();
-    while (!NRF_CLOCK->EVENTS_HFCLKSTARTED) {
-      if (millis() - start > 10) {
-        BRIDGE_DEBUG_PRINTLN("HFXO failed to start\n");
-        NRF_CLOCK->TASKS_HFCLKSTOP = 1;
-        return;
-      }
+  if (!isHfxoRunning()) {
+    if (!startHfxo()) {
+      BRIDGE_DEBUG_PRINTLN("HFXO failed to start\n");
+      return;
     }
-    NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
     _hfxo_started = true;
   }
 
@@ -325,6 +336,21 @@ void NRF52RadioBridge::serviceTx() {
 
 void NRF52RadioBridge::loop() {
   if (!_initialized) return;
+
+  // Without the SoftDevice nothing counts HFXO requests, so others can stop it while we use it
+  // (e.g. TinyUSB on USB unplug). The radio doesn't work without it: start it again, and retune.
+  if (!isHfxoRunning() && startHfxo()) {
+    BRIDGE_DEBUG_PRINTLN("HFXO was stopped, restarted it\n");
+    _hfxo_started = true;
+    NVIC_DisableIRQ(RADIO_IRQn);
+    configureRadio();
+    startRx();
+    NVIC_EnableIRQ(RADIO_IRQn);
+    if (_tx_in_flight) { // drop the frame being sent
+      _tx_in_flight = false;
+      _tx_tail = (_tx_tail + 1) % TX_SLOTS;
+    }
+  }
 
   // drain received frames (ISR is the producer, we only advance the tail)
   while (_rx_tail != _rx_head) {
