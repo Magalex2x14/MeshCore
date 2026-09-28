@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <nrf.h>
 #include <nrf_sdm.h>
+#include <helpers/TxtDataHelpers.h>
 
 // Air protocol of NRF52RadioBridge (helpers/bridges/NRF52RadioBridge.cpp), must be kept in sync
 #define NRF52_WIRELESS_BASE_ADDR     0x4D434252
@@ -33,11 +34,14 @@ static bool tx_pending = false;                 // queued, waiting for a clear c
 static uint8_t tx_attempts = 0;
 static uint32_t tx_next_attempt = 0;
 static int8_t tx_power_dbm = 4;
+static uint8_t channel = NRF52_WIRELESS_CHANNEL;
+static char secret[16] = NRF52_WIRELESS_SECRET;   // same size as repeater bridge_secret
+static KeyValueStore* prefs_store = NULL;
 
-static uint8_t channelToFrequency(uint8_t channel) {
-  static const uint8_t freqs[] = { 82, 50, 24 };  // 2482, 2450, 2424 MHz (same as NRF52RadioBridge)
-  if (channel < 1 || channel > sizeof(freqs)) channel = 1;
-  return freqs[channel - 1];
+static uint8_t channelToFrequency(uint8_t ch) {
+  static const uint8_t freqs[NRF52WirelessRadio::NUM_CHANNELS] = { 82, 50, 24 };  // 2482, 2450, 2424 MHz (same as NRF52RadioBridge)
+  if (ch < 1 || ch > NRF52WirelessRadio::NUM_CHANNELS) ch = 1;
+  return freqs[ch - 1];
 }
 
 static int8_t supportedTxPower(int8_t dbm) {
@@ -67,8 +71,7 @@ static uint16_t fletcher16(const uint8_t *data, size_t len) {
 }
 
 static void xorCrypt(uint8_t *data, size_t len) {
-  static const char secret[] = NRF52_WIRELESS_SECRET;
-  size_t keyLen = strlen(secret);
+  size_t keyLen = strnlen(secret, sizeof(secret));
   if (keyLen == 0) return;
   for (size_t i = 0; i < len; i++) {
     data[i] ^= secret[i % keyLen];
@@ -85,7 +88,7 @@ static void configureRadio() {
   NRF_RADIO->MODECNF0 = (RADIO_MODECNF0_RU_Default << RADIO_MODECNF0_RU_Pos) |
                         (RADIO_MODECNF0_DTX_Center << RADIO_MODECNF0_DTX_Pos);
   NRF_RADIO->TXPOWER = (uint8_t)supportedTxPower(tx_power_dbm) << RADIO_TXPOWER_TXPOWER_Pos;
-  NRF_RADIO->FREQUENCY = channelToFrequency(NRF52_WIRELESS_CHANNEL) << RADIO_FREQUENCY_FREQUENCY_Pos;
+  NRF_RADIO->FREQUENCY = channelToFrequency(channel) << RADIO_FREQUENCY_FREQUENCY_Pos;
 
   NRF_RADIO->BASE0 = NRF52_WIRELESS_BASE_ADDR;
   NRF_RADIO->PREFIX0 = NRF52_WIRELESS_ADDR_PREFIX << RADIO_PREFIX0_AP0_Pos;
@@ -378,4 +381,65 @@ uint32_t NRF52WirelessRadio::getEstAirtimeFor(int len_bytes) {
   int n_payload = 8 + max((num + den - 1) / den, 0) * _cr;
   int n_preamble = _sf <= 8 ? 32 : 16;    // RadioLibWrapper::preambleLengthForSF()
   return (n_preamble + 4.25f + n_payload) * t_sym;
+}
+
+static void applyChannel() {
+  if (state == STATE_OFF) return;  // not initialized, configureRadio() will pick it up
+  tx_pending = false;              // retune now, drops a frame being sent
+  restartRadio();
+  is_send_complete = true;
+}
+
+void NRF52WirelessRadio::attachDynamicPrefs(KeyValueStore* prefs) {
+  prefs_store = prefs;
+
+  char tmp[sizeof(secret)];
+  if (prefs->getByKey("br_ch", tmp, sizeof(tmp) - 1)) {
+    int ch = atoi(tmp);
+    if (ch > 0 && ch <= NUM_CHANNELS) channel = ch;
+  }
+  if (prefs->getByKey("br_sec", tmp, sizeof(tmp) - 1)) {
+    StrHelper::strncpy(secret, tmp, sizeof(secret));
+  }
+
+  applyChannel();
+}
+
+bool NRF52WirelessRadio::handleCommand(const char* command, char* reply) {
+  if (strcmp(command, "get bridge.channel") == 0) {
+    sprintf(reply, "> %d", (uint32_t)channel);
+    return true;
+  }
+  if (memcmp(command, "set bridge.channel ", 19) == 0) {
+    int ch = atoi(&command[19]);
+    if (ch > 0 && ch <= NUM_CHANNELS) {
+      channel = ch;
+      if (prefs_store) {
+        char tmp[4];
+        sprintf(tmp, "%d", ch);
+        prefs_store->setByKey("br_ch", tmp);
+      }
+      applyChannel();
+      strcpy(reply, "OK");
+    } else {
+      sprintf(reply, "Error: channel must be between 1-%d", NUM_CHANNELS);
+    }
+    return true;
+  }
+  if (strcmp(command, "get bridge.secret") == 0) {
+    sprintf(reply, "> %s", secret);
+    return true;
+  }
+  if (memcmp(command, "set bridge.secret ", 18) == 0) {
+    const char* sp = &command[18];
+    if (strchr(sp, ':') || strchr(sp, '|')) {   // separators of the custom prefs
+      strcpy(reply, "Error, bad chars");
+    } else {
+      StrHelper::strncpy(secret, sp, sizeof(secret));
+      if (prefs_store) prefs_store->setByKey("br_sec", secret);
+      strcpy(reply, "OK");
+    }
+    return true;
+  }
+  return false;  // not handled
 }

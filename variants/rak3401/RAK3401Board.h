@@ -3,6 +3,9 @@
 #include <MeshCore.h>
 #include <Arduino.h>
 #include <helpers/NRF52Board.h>
+#ifdef NRF52_WIRELESS_RADIO
+  #include <helpers/nrf52/NRF52WirelessRadio.h>
+#endif
 
 // built-ins
 #define  PIN_VBAT_READ    5
@@ -37,6 +40,16 @@ public:
   const char* getManufacturerName() const override {
     return "RAK 3401";
   }
+
+#ifdef NRF52_WIRELESS_RADIO
+  void attachDynamicPrefs(KeyValueStore* prefs) {
+    NRF52WirelessRadio::attachDynamicPrefs(prefs);
+  }
+
+  bool handleCommand(const char* command, uint32_t sender_timestamp, char* reply) override {
+    return NRF52WirelessRadio::handleCommand(command, reply);
+  }
+#endif
 
   // TX/RX switching is handled by SX1262 DIO2 -> SKY66122 CTX (hardware-timed).
   // No onBeforeTransmit/onAfterTransmit overrides needed.

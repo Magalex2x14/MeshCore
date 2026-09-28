@@ -1,12 +1,13 @@
 #pragma once
 
 #include <Mesh.h>
+#include <helpers/KeyValueStore.h>
 
 #ifndef NRF52_WIRELESS_CHANNEL
-  #define NRF52_WIRELESS_CHANNEL  1             // same as repeater bridge.channel: 1 = 2482, 2 = 2450, 3 = 2424 MHz
+  #define NRF52_WIRELESS_CHANNEL  1             // default bridge.channel: 1 = 2482, 2 = 2450, 3 = 2424 MHz
 #endif
 #ifndef NRF52_WIRELESS_SECRET
-  #define NRF52_WIRELESS_SECRET   "LVSITANOS"   // must match repeater bridge.secret
+  #define NRF52_WIRELESS_SECRET   "LVSITANOS"   // default bridge.secret
 #endif
 #ifndef NRF52_WIRELESS_LBT_RSSI
   #define NRF52_WIRELESS_LBT_RSSI -70           // dBm, channel considered busy above this level
@@ -27,6 +28,10 @@ public:
  * XOR secret + Fletcher-16), so a node using it joins the mesh through a nearby repeater compiled
  * with WITH_NRF52_WIRELESS_BRIDGE.
  *
+ * bridge.channel and bridge.secret must match the repeater. They can be changed with the same CLI
+ * commands as on the repeater (get/set bridge.channel, get/set bridge.secret), the board forwards
+ * attachDynamicPrefs() / handleCommand() here, and they are persisted in the custom prefs.
+ *
  * The RADIO peripheral is driven directly, so the SoftDevice must NOT be enabled (no BLE).
  */
 class NRF52WirelessRadio : public mesh::Radio {
@@ -37,6 +42,9 @@ protected:
   float _last_rssi;
 
 public:
+  /** Number of selectable bridge.channel values (same as NRF52RadioBridge) */
+  static const uint8_t NUM_CHANNELS = 3;
+
   NRF52WirelessRadio() : _bw(LORA_BW), _sf(LORA_SF), _cr(5), _last_rssi(0) { n_recv = n_sent = n_recv_errors = 0; }
 
   uint32_t getRngSeed();
@@ -76,4 +84,10 @@ public:
   virtual bool getRxBoostedGainMode() const { return false; }
 
   void setTxPower(int8_t dbm);
+
+  /** Loads persisted bridge.channel / bridge.secret, called from board.attachDynamicPrefs() */
+  static void attachDynamicPrefs(KeyValueStore* prefs);
+
+  /** get/set bridge.channel, get/set bridge.secret, called from board.handleCommand() */
+  static bool handleCommand(const char* command, char* reply);
 };
