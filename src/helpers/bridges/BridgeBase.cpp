@@ -49,6 +49,8 @@ void BridgeBase::handleReceivedPacket(mesh::Packet *packet) {
 
   if (!_seen_packets.wasSeen(packet)) {
     _seen_packets.markSeen(packet);
+    // not received over LoRa, so there's no SNR: don't leave the stale value of a reused pool packet
+    packet->_snr = BRIDGE_RX_SNR_X4;
     // bridge_delay provides a buffer to prevent immediate processing conflicts in the mesh network.
     _mgr->queueInbound(packet, millis() + _prefs->bridge_delay);
   } else {
