@@ -406,8 +406,7 @@ void NRF52RadioBridge::sendPacket(mesh::Packet *packet) {
     return;
   }
 
-  if (!_seen_packets.wasSeen(packet)) {
-    _seen_packets.markSeen(packet);
+  if (shouldSendPacket(packet)) {
 
     uint8_t next = (_tx_head + 1) % TX_SLOTS;
     if (next == _tx_tail) {

@@ -115,8 +115,7 @@ void RS232Bridge::sendPacket(mesh::Packet *packet) {
     return;
   }
 
-  if (!_seen_packets.wasSeen(packet)) {
-    _seen_packets.markSeen(packet);
+  if (shouldSendPacket(packet)) {
 
     uint8_t buffer[MAX_SERIAL_PACKET_SIZE];
     uint16_t len = packet->writeTo(buffer + 4);

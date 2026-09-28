@@ -55,3 +55,14 @@ void BridgeBase::handleReceivedPacket(mesh::Packet *packet) {
     _mgr->free(packet);
   }
 }
+
+bool BridgeBase::shouldSendPacket(const mesh::Packet *packet) {
+  if (_prefs->bridge_pkt_src == 2) {
+    return true; // companion mode, no duplicate filtering
+  }
+  if (_seen_packets.wasSeen(packet)) {
+    return false;
+  }
+  _seen_packets.markSeen(packet);
+  return true;
+}

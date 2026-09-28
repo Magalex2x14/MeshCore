@@ -130,4 +130,16 @@ protected:
    * @param packet The received mesh packet
    */
   void handleReceivedPacket(mesh::Packet *packet);
+
+  /**
+   * @brief Common duplicate check for packets to be sent over the bridge
+   *
+   * Tracks sent packets in _seen_packets to prevent loops between bridges. In companion mode
+   * (bridge.source companion) every packet is sent, duplicates included, so a companion on the
+   * other side of the bridge hears the same as it would hear on air next to the repeater.
+   *
+   * @param packet The mesh packet to be sent
+   * @return true if the packet should be sent
+   */
+  bool shouldSendPacket(const mesh::Packet *packet);
 };

@@ -1103,8 +1103,11 @@ region save
 
 **Parameters:**
 - `source`: 
-  - `logRx`: bridges received packets
-  - `logTx`: bridges transmitted packets
+  - `logRx` (or `rx`): bridges received packets
+  - `logTx` (or `tx`): bridges transmitted packets
+  - `companion`: bridges all received and transmitted packets without duplicate filtering, for a companion
+    on the other side of the bridge (e.g. `PCA10059_companion_wirelessbridge_usb`), which then hears the
+    same as it would hear on air next to the repeater. Use only with companions on that bridge channel.
 
 **Default:** `logTx`
 

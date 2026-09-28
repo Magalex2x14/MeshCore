@@ -124,7 +124,7 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {  // Legacy 
     // sanitise bad bridge pref values
     _prefs->bridge_enabled = constrain(_prefs->bridge_enabled, 0, 1);
     _prefs->bridge_delay = constrain(_prefs->bridge_delay, 0, 10000);
-    _prefs->bridge_pkt_src = constrain(_prefs->bridge_pkt_src, 0, 1);
+    _prefs->bridge_pkt_src = constrain(_prefs->bridge_pkt_src, 0, 2);
     _prefs->bridge_baud = constrain(_prefs->bridge_baud, 9600, BRIDGE_MAX_BAUD);
     _prefs->bridge_channel = constrain(_prefs->bridge_channel, 0, 14);
 
@@ -603,9 +603,22 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
       strcpy(reply, "Error: delay must be between 0-10000 ms");
     }
   } else if (memcmp(config, "bridge.source ", 14) == 0) {
-    _prefs->bridge_pkt_src = memcmp(&config[14], "rx", 2) == 0;
-    savePrefs();
-    strcpy(reply, "OK");
+    const char* src = &config[14];
+    int pkt_src = -1;
+    if (memcmp(src, "logTx", 5) == 0 || memcmp(src, "tx", 2) == 0) {
+      pkt_src = 0;
+    } else if (memcmp(src, "logRx", 5) == 0 || memcmp(src, "rx", 2) == 0) {
+      pkt_src = 1;
+    } else if (memcmp(src, "companion", 9) == 0) {
+      pkt_src = 2;
+    }
+    if (pkt_src >= 0) {
+      _prefs->bridge_pkt_src = pkt_src;
+      savePrefs();
+      strcpy(reply, "OK");
+    } else {
+      strcpy(reply, "Error: source must be logTx, logRx or companion");
+    }
 #endif
 #ifdef WITH_RS232_BRIDGE
   } else if (memcmp(config, "bridge.baud ", 12) == 0) {
@@ -767,7 +780,7 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
   } else if (memcmp(config, "bridge.delay", 12) == 0) {
     sprintf(reply, "> %d", (uint32_t)_prefs->bridge_delay);
   } else if (memcmp(config, "bridge.source", 13) == 0) {
-    sprintf(reply, "> %s", _prefs->bridge_pkt_src ? "logRx" : "logTx");
+    sprintf(reply, "> %s", _prefs->bridge_pkt_src == 2 ? "companion" : _prefs->bridge_pkt_src ? "logRx" : "logTx");
 #endif
 #ifdef WITH_RS232_BRIDGE
   } else if (memcmp(config, "bridge.baud", 11) == 0) {
