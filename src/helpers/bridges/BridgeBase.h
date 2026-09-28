@@ -38,6 +38,16 @@ public:
   static constexpr uint16_t BRIDGE_PACKET_MAGIC = 0xC03E;
 
   /**
+   * @brief Magic number of bridge packets that also carry link levels (bridge.source companion)
+   *
+   * Layout after the checksum: SNR x4, RSSI, noise floor (int8 each), then the mesh packet (may be
+   * empty for a levels-only update). Other bridges ignore these packets as they don't match
+   * BRIDGE_PACKET_MAGIC.
+   */
+  static constexpr uint16_t BRIDGE_PACKET_MAGIC_LEVELS = 0xC03F;
+  static constexpr uint16_t BRIDGE_LEVELS_SIZE = 3;
+
+  /**
    * @brief Common field sizes used by bridge implementations
    *
    * These constants define the size of common packet fields used across bridges.

@@ -407,49 +407,74 @@ void NRF52RadioBridge::sendPacket(mesh::Packet *packet) {
   }
 
   if (shouldSendPacket(packet)) {
-
-    uint8_t next = (_tx_head + 1) % TX_SLOTS;
-    if (next == _tx_tail) {
-      BRIDGE_DEBUG_PRINTLN("TX queue full, packet dropped\n");
-      return;
-    }
-
-    uint8_t sizingBuffer[MAX_TRANS_UNIT + 1];
-    uint16_t meshPacketLen = packet->writeTo(sizingBuffer);
-
-    // Check if packet fits within our maximum payload size
-    if (meshPacketLen > MAX_PAYLOAD_SIZE) {
-      BRIDGE_DEBUG_PRINTLN("TX packet too large (payload=%d, max=%d)\n", meshPacketLen, MAX_PAYLOAD_SIZE);
-      return;
-    }
-
-    uint8_t *buffer = &_tx_frames[_tx_head].data[1];
-
-    // Write magic header (2 bytes)
-    buffer[0] = (BRIDGE_PACKET_MAGIC >> 8) & 0xFF;
-    buffer[1] = BRIDGE_PACKET_MAGIC & 0xFF;
-
-    // Write packet payload starting after magic header and checksum
-    const size_t packetOffset = BRIDGE_MAGIC_SIZE + BRIDGE_CHECKSUM_SIZE;
-    memcpy(buffer + packetOffset, sizingBuffer, meshPacketLen);
-
-    // Calculate and add checksum (only of the payload)
-    uint16_t checksum = fletcher16(buffer + packetOffset, meshPacketLen);
-    buffer[2] = (checksum >> 8) & 0xFF; // High byte
-    buffer[3] = checksum & 0xFF;        // Low byte
-
-    // Encrypt payload and checksum (not including magic header)
-    xorCrypt(buffer + BRIDGE_MAGIC_SIZE, meshPacketLen + BRIDGE_CHECKSUM_SIZE);
-
-    // Length byte for the radio: magic header + checksum + payload
-    _tx_frames[_tx_head].data[0] = BRIDGE_MAGIC_SIZE + BRIDGE_CHECKSUM_SIZE + meshPacketLen;
-    _tx_head = next;
-
-    BRIDGE_DEBUG_PRINTLN("TX queued, len=%d\n", meshPacketLen);
-
-    // try to send right away instead of waiting for the next loop()
-    serviceTx();
+    queueFrame(packet, NULL);
   }
+}
+
+void NRF52RadioBridge::sendPacketWithLevels(mesh::Packet *packet, int8_t snr_x4, int8_t rssi, int8_t noise_floor) {
+  // Guard against uninitialized state
+  if (_initialized == false) {
+    return;
+  }
+
+  const int8_t levels[BRIDGE_LEVELS_SIZE] = { snr_x4, rssi, noise_floor };
+  if (!packet) {
+    queueFrame(NULL, levels); // levels only
+  } else if (shouldSendPacket(packet)) {
+    queueFrame(packet, levels);
+  }
+}
+
+void NRF52RadioBridge::queueFrame(mesh::Packet *packet, const int8_t *levels) {
+  uint8_t next = (_tx_head + 1) % TX_SLOTS;
+  if (next == _tx_tail) {
+    BRIDGE_DEBUG_PRINTLN("TX queue full, packet dropped\n");
+    return;
+  }
+
+  uint8_t sizingBuffer[MAX_TRANS_UNIT + 1];
+  uint16_t meshPacketLen = packet ? packet->writeTo(sizingBuffer) : 0;
+
+  // Check if packet fits within our maximum payload size, without the levels if needed
+  if (levels && meshPacketLen > MAX_PAYLOAD_SIZE - BRIDGE_LEVELS_SIZE) {
+    levels = NULL;
+  }
+  if (meshPacketLen > MAX_PAYLOAD_SIZE) {
+    BRIDGE_DEBUG_PRINTLN("TX packet too large (payload=%d, max=%d)\n", meshPacketLen, MAX_PAYLOAD_SIZE);
+    return;
+  }
+
+  uint8_t *buffer = &_tx_frames[_tx_head].data[1];
+  const uint16_t magic = levels ? BRIDGE_PACKET_MAGIC_LEVELS : BRIDGE_PACKET_MAGIC;
+  const size_t levelsLen = levels ? BRIDGE_LEVELS_SIZE : 0;
+
+  // Write magic header (2 bytes)
+  buffer[0] = (magic >> 8) & 0xFF;
+  buffer[1] = magic & 0xFF;
+
+  // Write levels and packet payload starting after magic header and checksum
+  const size_t dataOffset = BRIDGE_MAGIC_SIZE + BRIDGE_CHECKSUM_SIZE;
+  if (levels) {
+    memcpy(buffer + dataOffset, levels, levelsLen);
+  }
+  memcpy(buffer + dataOffset + levelsLen, sizingBuffer, meshPacketLen);
+
+  // Calculate and add checksum (of the levels and payload)
+  uint16_t checksum = fletcher16(buffer + dataOffset, levelsLen + meshPacketLen);
+  buffer[2] = (checksum >> 8) & 0xFF; // High byte
+  buffer[3] = checksum & 0xFF;        // Low byte
+
+  // Encrypt checksum, levels and payload (not including magic header)
+  xorCrypt(buffer + BRIDGE_MAGIC_SIZE, BRIDGE_CHECKSUM_SIZE + levelsLen + meshPacketLen);
+
+  // Length byte for the radio: magic header + checksum + levels + payload
+  _tx_frames[_tx_head].data[0] = BRIDGE_MAGIC_SIZE + BRIDGE_CHECKSUM_SIZE + levelsLen + meshPacketLen;
+  _tx_head = next;
+
+  BRIDGE_DEBUG_PRINTLN("TX queued, len=%d%s\n", meshPacketLen, levels ? " +levels" : "");
+
+  // try to send right away instead of waiting for the next loop()
+  serviceTx();
 }
 
 void NRF52RadioBridge::onPacketReceived(mesh::Packet *packet) {

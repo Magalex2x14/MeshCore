@@ -32,6 +32,11 @@ public:
  * commands as on the repeater (get/set bridge.channel, get/set bridge.secret), the board forwards
  * attachDynamicPrefs() / handleCommand() here, and they are persisted in the custom prefs.
  *
+ * With bridge.source companion on the repeater, bridge packets also carry the SNR/RSSI the repeater
+ * received them with and its noise floor (BRIDGE_PACKET_MAGIC_LEVELS). They are reported as the
+ * levels of this radio, so the node behaves as if it were on air next to the repeater. Plain bridge
+ * packets report the 2.4GHz RSSI and no SNR.
+ *
  * The RADIO peripheral is driven directly, so the SoftDevice must NOT be enabled (no BLE).
  */
 class NRF52WirelessRadio : public mesh::Radio {
@@ -39,13 +44,14 @@ protected:
   uint32_t n_recv, n_sent, n_recv_errors;
   float _bw;
   uint8_t _sf, _cr;
-  float _last_rssi;
+  float _last_rssi, _last_snr;
+  int _noise_floor;
 
 public:
   /** Number of selectable bridge.channel values (same as NRF52RadioBridge) */
   static const uint8_t NUM_CHANNELS = 3;
 
-  NRF52WirelessRadio() : _bw(LORA_BW), _sf(LORA_SF), _cr(5), _last_rssi(0) { n_recv = n_sent = n_recv_errors = 0; }
+  NRF52WirelessRadio() : _bw(LORA_BW), _sf(LORA_SF), _cr(5), _last_rssi(0), _last_snr(0), _noise_floor(0) { n_recv = n_sent = n_recv_errors = 0; }
 
   uint32_t getRngSeed();
 
@@ -72,7 +78,10 @@ public:
   void resetStats() { n_recv = n_sent = n_recv_errors = 0; }
 
   virtual float getLastRSSI() const override { return _last_rssi; }
-  virtual float getLastSNR() const override { return 0; }
+  virtual float getLastSNR() const override { return _last_snr; }
+
+  /** Noise floor of the repeater, received with the levels (repeater bridge.source companion) */
+  int getNoiseFloor() const override { return _noise_floor; }
 
   float packetScore(float snr, int packet_len) override { return 0; }
 

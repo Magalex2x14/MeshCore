@@ -1108,6 +1108,9 @@ region save
   - `companion`: bridges all received and transmitted packets without duplicate filtering, for a companion
     on the other side of the bridge (e.g. `PCA10059_companion_wirelessbridge_usb`), which then hears the
     same as it would hear on air next to the repeater. Use only with companions on that bridge channel.
+    Packets carry the SNR/RSSI the repeater received them with (own transmissions: +12.5 dB / -30 dBm)
+    and the repeater's noise floor, which is also sent on its own after 30 s without traffic
+    (nRF52 2.4GHz bridge only).
 
 **Default:** `logTx`
 

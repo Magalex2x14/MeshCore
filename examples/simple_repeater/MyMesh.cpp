@@ -1,6 +1,17 @@
 #include "MyMesh.h"
 #include <algorithm>
 
+// bridge.source companion: levels of the repeater's own transmissions, as heard right next to it
+#ifndef BRIDGE_COMPANION_TX_SNR_X4
+  #define BRIDGE_COMPANION_TX_SNR_X4  50      // +12.5 dB
+#endif
+#ifndef BRIDGE_COMPANION_TX_RSSI
+  #define BRIDGE_COMPANION_TX_RSSI    -30     // dBm
+#endif
+#ifndef BRIDGE_COMPANION_LEVELS_INTERVAL
+  #define BRIDGE_COMPANION_LEVELS_INTERVAL 30000  // ms, levels-only update (noise floor) without traffic
+#endif
+
 /* ------------------------------ Config -------------------------------- */
 
 #ifndef LORA_FREQ
@@ -778,8 +789,10 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
 #ifdef WITH_BRIDGE
-  if (_prefs.bridge_pkt_src == 1 || _prefs.bridge_pkt_src == 2) {  // logRx or companion
+  if (_prefs.bridge_pkt_src == 1) {
     bridge.sendPacket(pkt);
+  } else if (_prefs.bridge_pkt_src == 2) {  // companion: with the levels it was received with
+    sendBridgeCompanion(pkt, pkt->_snr, (int8_t)constrain(_radio->getLastRSSI(), -128, 127));
   }
 #endif
 
@@ -802,10 +815,20 @@ void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
   }
 }
 
+#ifdef WITH_BRIDGE
+void MyMesh::sendBridgeCompanion(mesh::Packet *pkt, int8_t snr_x4, int8_t rssi) {
+  int8_t noise_floor = (int8_t)constrain(_radio->getNoiseFloor(), -128, 127);
+  bridge.sendPacketWithLevels(pkt, snr_x4, rssi, noise_floor);
+  next_bridge_levels = futureMillis(BRIDGE_COMPANION_LEVELS_INTERVAL);
+}
+#endif
+
 void MyMesh::logTx(mesh::Packet *pkt, int len) {
 #ifdef WITH_BRIDGE
-  if (_prefs.bridge_pkt_src == 0 || _prefs.bridge_pkt_src == 2) {  // logTx or companion
+  if (_prefs.bridge_pkt_src == 0) {
     bridge.sendPacket(pkt);
+  } else if (_prefs.bridge_pkt_src == 2) {  // companion: own transmission
+    sendBridgeCompanion(pkt, BRIDGE_COMPANION_TX_SNR_X4, BRIDGE_COMPANION_TX_RSSI);
   }
 #endif
 
@@ -1192,6 +1215,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   last_millis = 0;
   uptime_millis = 0;
   next_local_advert = next_flood_advert = 0;
+#ifdef WITH_BRIDGE
+  next_bridge_levels = 0;
+#endif
   dirty_contacts_expiry = 0;
   set_radio_at = revert_radio_at = 0;
   _logging = false;
@@ -1713,6 +1739,11 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
 void MyMesh::loop() {
 #ifdef WITH_BRIDGE
   bridge.loop();
+
+  // bridge.source companion: keep the companion's noise floor up to date without traffic
+  if (_prefs.bridge_pkt_src == 2 && bridge.isRunning() && millisHasNowPassed(next_bridge_levels)) {
+    sendBridgeCompanion(NULL, 0, 0);
+  }
 #endif
 
   mesh::Mesh::loop();

@@ -102,6 +102,7 @@ private:
   void transmitFrame(RadioFrame *frame);
   void serviceTx();
   void processRxFrame(const RadioFrame *frame);
+  void queueFrame(mesh::Packet *packet, const int8_t *levels);
 
 public:
   /** Number of selectable bridge.channel values */
@@ -168,6 +169,13 @@ public:
    * @param packet The mesh packet to transmit
    */
   void sendPacket(mesh::Packet *packet) override;
+
+  /**
+   * Like sendPacket(), but the frame also carries the link levels (BRIDGE_PACKET_MAGIC_LEVELS),
+   * for a companion on the other side of the bridge. Without a packet only the levels are sent.
+   * Falls back to a plain frame if the packet doesn't fit with the levels.
+   */
+  void sendPacketWithLevels(mesh::Packet *packet, int8_t snr_x4, int8_t rssi, int8_t noise_floor) override;
 };
 
 #endif

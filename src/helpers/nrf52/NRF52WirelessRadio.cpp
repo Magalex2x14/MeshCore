@@ -10,6 +10,8 @@
 #define NRF52_WIRELESS_WHITENING_IV  0x58
 #define NRF52_WIRELESS_IRQ_PRIORITY  3
 #define BRIDGE_PACKET_MAGIC          0xC03E
+#define BRIDGE_PACKET_MAGIC_LEVELS   0xC03F   // + SNR x4, RSSI, noise floor (bridge.source companion)
+#define BRIDGE_LEVELS_SIZE           3
 #define BRIDGE_MAGIC_SIZE            2
 #define BRIDGE_CHECKSUM_SIZE         2
 
@@ -350,7 +352,8 @@ int NRF52WirelessRadio::recvRaw(uint8_t* bytes, int sz) {
     rx_tail = (rx_tail + 1) % RX_SLOTS;  // slot can be reused by the radio now
 
     if (len < BRIDGE_MAGIC_SIZE + BRIDGE_CHECKSUM_SIZE) continue;  // too small
-    if (((decrypted[0] << 8) | decrypted[1]) != BRIDGE_PACKET_MAGIC) continue;  // not a bridge packet
+    uint16_t magic = (decrypted[0] << 8) | decrypted[1];
+    if (magic != BRIDGE_PACKET_MAGIC && magic != BRIDGE_PACKET_MAGIC_LEVELS) continue;  // not a bridge packet
 
     uint8_t *data = &decrypted[BRIDGE_MAGIC_SIZE];
     size_t data_len = len - BRIDGE_MAGIC_SIZE;
@@ -364,8 +367,28 @@ int NRF52WirelessRadio::recvRaw(uint8_t* bytes, int sz) {
       continue;
     }
 
-    memcpy(bytes, &data[BRIDGE_CHECKSUM_SIZE], payload_len);
-    _last_rssi = rssi;
+    const uint8_t *payload = &data[BRIDGE_CHECKSUM_SIZE];
+    if (magic == BRIDGE_PACKET_MAGIC_LEVELS) {
+      if (payload_len < BRIDGE_LEVELS_SIZE) {
+        n_recv_errors++;
+        continue;
+      }
+      // levels the repeater received the packet with, and its noise floor
+      int8_t snr_x4 = (int8_t)payload[0];
+      int8_t rep_rssi = (int8_t)payload[1];
+      _noise_floor = (int8_t)payload[2];
+      payload += BRIDGE_LEVELS_SIZE;
+      payload_len -= BRIDGE_LEVELS_SIZE;
+      if (payload_len == 0) continue;  // levels-only update
+
+      _last_snr = snr_x4 / 4.0f;
+      _last_rssi = rep_rssi;
+    } else {
+      _last_snr = 0;
+      _last_rssi = rssi;  // 2.4GHz link
+    }
+
+    memcpy(bytes, payload, payload_len);
     n_recv++;
     return payload_len;
   }

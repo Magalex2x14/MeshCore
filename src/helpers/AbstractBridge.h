@@ -38,6 +38,19 @@ public:
   virtual void sendPacket(mesh::Packet* packet) = 0;
 
   /**
+   * @brief Like sendPacket(), but also passes the link levels, for a companion on the other side
+   *        of the bridge (bridge.source companion). Bridges that can't carry them just send the packet.
+   *
+   * @param packet The packet, or NULL to send only the levels (noise floor update without traffic).
+   * @param snr_x4 SNR the packet was received with, in 1/4 dB (as mesh::Packet::_snr).
+   * @param rssi RSSI the packet was received with, in dBm.
+   * @param noise_floor Current noise floor, in dBm.
+   */
+  virtual void sendPacketWithLevels(mesh::Packet* packet, int8_t snr_x4, int8_t rssi, int8_t noise_floor) {
+    if (packet) sendPacket(packet);
+  }
+
+  /**
    * @brief Processes a received packet from the bridge's medium.
    *
    * @param packet The packet that was received.
